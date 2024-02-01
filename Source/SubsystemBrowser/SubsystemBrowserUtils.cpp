@@ -332,14 +332,12 @@ const TMap<EClassFlags, FString>& GetClassFlagsMap()
 		ADD_FLAG(CLASS_Transient);
 		ADD_FLAG(CLASS_MatchedSerializers);
 		ADD_FLAG(CLASS_Native);
-		ADD_FLAG(CLASS_NoExport);
 		ADD_FLAG(CLASS_NotPlaceable);
 		ADD_FLAG(CLASS_PerObjectConfig);
 		ADD_FLAG(CLASS_ReplicationDataIsSetUp);
 		ADD_FLAG(CLASS_EditInlineNew);
 		ADD_FLAG(CLASS_CollapseCategories);
 		ADD_FLAG(CLASS_Interface);
-		ADD_FLAG(CLASS_CustomConstructor);
 		ADD_FLAG(CLASS_Const);
 		ADD_FLAG(CLASS_CompiledFromBlueprint);
 		ADD_FLAG(CLASS_MinimalAPI);

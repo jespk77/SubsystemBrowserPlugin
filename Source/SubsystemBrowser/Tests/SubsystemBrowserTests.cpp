@@ -5,7 +5,7 @@
 #include "Tests/SubsystemBrowserTestSubsystem.h"
 #include "Misc/AutomationTest.h"
 
-constexpr int BasicTestFlags = EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter;
+constexpr EAutomationTestFlags BasicTestFlags = EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter;
 
 //
 // IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPropertyCountTest, "Subsystem.Util.PropertyCounter", BasicTestFlags);

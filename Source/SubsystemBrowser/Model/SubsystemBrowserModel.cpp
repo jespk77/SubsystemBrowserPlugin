@@ -49,6 +49,8 @@ TWeakObjectPtr<UWorld> FSubsystemModel::GetCurrentWorld() const
 
 void FSubsystemModel::SetCurrentWorld(TWeakObjectPtr<UWorld> InWorld)
 {
+	UE_LOG(LogSubsystemBrowser, Log, TEXT("World Switch %s => %s"), *GetNameSafe(CurrentWorld.Get()), *GetNameSafe(InWorld.Get()));
+
 	CurrentWorld = InWorld;
 
 	EmptyModel();
@@ -72,17 +74,25 @@ const TArray<SubsystemTreeItemPtr>& FSubsystemModel::GetAllCategories() const
 	return AllCategories;
 }
 
-void FSubsystemModel::GetFilteredCategories(TArray<SubsystemTreeItemPtr>& OutCategories) const
+void FSubsystemModel::GetFilteredCategories(TArray<SubsystemTreeItemPtr>& OutCategories)
 {
 	OutCategories.Empty();
 
 	for (const SubsystemTreeItemPtr& Item : GetAllCategories())
 	{
 		check(Item->GetAsCategoryDescriptor());
-		if (!CategoryFilter.IsValid() || CategoryFilter->PassesFilter(*Item))
+		if (CategoryFilter.IsValid() && !CategoryFilter->PassesFilter(*Item))
 		{
-			OutCategories.Add(Item);
+			continue;
 		}
+
+		if (USubsystemBrowserSettings::Get()->ShouldHideEmptyCategories()
+			&& !GetNumSubsystemsFromCategory(Item))
+		{
+			continue;
+		}
+
+		OutCategories.Add(Item);
 	}
 }
 
@@ -91,7 +101,7 @@ const TArray<SubsystemTreeItemPtr>& FSubsystemModel::GetAllSubsystems() const
 	return AllSubsystems;
 }
 
-void FSubsystemModel::GetAllSubsystemsInCategory(SubsystemTreeItemConstPtr Category, TArray<SubsystemTreeItemPtr>& OutChildren) const
+void FSubsystemModel::GetAllSubsystemsInCategory(SubsystemTreeItemConstPtr Category, TArray<SubsystemTreeItemPtr>& OutChildren)
 {
 	check(Category->GetAsCategoryDescriptor());
 
@@ -105,9 +115,9 @@ void FSubsystemModel::GetAllSubsystemsInCategory(SubsystemTreeItemConstPtr Categ
 	}
 }
 
-void FSubsystemModel::GetFilteredSubsystems(SubsystemTreeItemConstPtr Category, TArray<SubsystemTreeItemPtr>& OutChildren) const
+void FSubsystemModel::GetFilteredSubsystems(SubsystemTreeItemConstPtr Category, TArray<SubsystemTreeItemPtr>& OutChildren)
 {
-	FSubsystemTreeCategoryItem* AsCategory = Category->GetAsCategoryDescriptor();
+	const FSubsystemTreeCategoryItem* AsCategory = Category->GetAsCategoryDescriptor();
 	check(AsCategory);
 
 	OutChildren.Empty();
@@ -122,6 +132,8 @@ void FSubsystemModel::GetFilteredSubsystems(SubsystemTreeItemConstPtr Category, 
 				continue;
 			if (Settings->ShouldShowOnlyPlugins() && !Item->IsPluginModule())
 				continue;
+			if (Settings->ShouldShowOnlyViewable() && !Item->HasViewableElements())
+				continue;
 
 			if (!SubsystemTextFilter.IsValid() || SubsystemTextFilter->PassesFilter(*Item))
 			{
@@ -131,8 +143,38 @@ void FSubsystemModel::GetFilteredSubsystems(SubsystemTreeItemConstPtr Category, 
 	}
 }
 
+void FSubsystemModel::GetSubsystemSubobjects(SubsystemTreeItemConstPtr Subsystem, TArray<SubsystemTreeItemPtr>& OutChildren)
+{
+	const FSubsystemTreeSubsystemItem* AsSubsystem = Subsystem->GetAsSubsystemDescriptor();
+	check(AsSubsystem);
+	const FSubsystemTreeCategoryItem* AsCategory = AsSubsystem->GetParent()->GetAsCategoryDescriptor();
+	check(AsCategory);
+	
+	OutChildren.Empty();
+	
+	const USubsystemBrowserSettings* Settings = USubsystemBrowserSettings::Get();
+	if (!Settings->ShouldShowSubobjbects())
+		return;
 
-int32 FSubsystemModel::GetNumSubsystemsFromVisibleCategories() const
+	TArray<UObject*> Result;
+	FSubsystemBrowserUtils::DefaultSelectSubsystemSubobjects(AsSubsystem->GetObjectForDetails(), Result);
+
+	for (UObject* Object : Result)
+	{
+		auto Item = MakeShared<FSubsystemTreeObjectItem>(SharedThis(this), ConstCastSharedPtr<ISubsystemTreeItem>(Subsystem), Object);
+
+		OutChildren.Emplace(MoveTemp(Item));
+	}
+}
+
+int32 FSubsystemModel::GetNumSubsystemsFromCategory(SubsystemTreeItemConstPtr Category)
+{
+	TArray<SubsystemTreeItemPtr> Subsystems;
+	GetFilteredSubsystems(Category, Subsystems);
+	return Subsystems.Num();
+}
+
+int32 FSubsystemModel::GetNumSubsystemsFromVisibleCategories()
 {
 	int32 Count = 0;
 
@@ -261,7 +303,9 @@ void FSubsystemModel::PopulateSubsystems()
 	{
 		const FSubsystemTreeCategoryItem* AsCategory = Category->GetAsCategoryDescriptor();
 
-		for (UObject* Impl : AsCategory->Select(LocalWorld))
+		TArray<UObject*> Result;
+		AsCategory->Data->Select(LocalWorld, Result);
+		for (UObject* Impl : Result)
 		{
 			auto Descriptor = MakeShared<FSubsystemTreeSubsystemItem>(SharedThis(this), Category, Impl);
 

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Widgets/Views/STableRow.h"
+#include "Widgets/Views/SListView.h" // NoPCH
 #include "Model/SubsystemBrowserDescriptor.h"
 
 class FSubsystemModel;
@@ -36,10 +37,6 @@ public:
 	void Construct(const FArguments& InArgs, TSharedRef<STableViewBase> OwnerTableView);
 
 	virtual TSharedRef<SWidget> GenerateWidgetForColumn( const FName& ColumnName ) override;
-
-	const FSlateBrush* GetItemIconBrush() const;
-
-	bool IsColoringEnabled() const;
 
 public:
 	TSharedPtr<FSubsystemModel>			Model;

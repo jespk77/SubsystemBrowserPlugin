@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreFwd.h"
 #include "SubsystemBrowserFlags.h"
 #include "Styling/SlateStyle.h"
 #include "Styling/SlateColor.h"
@@ -15,10 +15,14 @@
 #include "Styling/AppStyle.h"
 #endif
 
-class FSubsystemBrowserStyle final : public FSlateStyleSet
+class SUBSYSTEMBROWSER_API FSubsystemBrowserStyle final : public FSlateStyleSet
 {
 public:
 	static const FName StyleName;
+
+	static const FName PanelIconName;
+	static const FName FolderOpenName;
+	static const FName FolderClosedName;
 
 	/** Register style set */
 	static void Register();
@@ -36,7 +40,10 @@ private:
 	static TSharedPtr<FSubsystemBrowserStyle> StyleInstance;
 };
 
-struct FStyleHelper
+/**
+ * Internal class for style system compatibility between older and newer engines.
+ */
+struct SUBSYSTEMBROWSER_API FStyleHelper
 {
 	static const ISlateStyle& Get();
 	static const FSlateBrush* GetBrush(const FName& InName);

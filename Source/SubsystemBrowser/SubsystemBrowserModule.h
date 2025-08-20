@@ -2,22 +2,27 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreFwd.h"
 #include "Modules/ModuleInterface.h"
+#include "Modules/ModuleManager.h"
 #include "Model/SubsystemBrowserCategory.h" // [no-fwd]
 #include "Model/SubsystemBrowserColumn.h" // [no-fwd]
 
-class USubsystemBrowserSettings;
+class FSpawnTabArgs;
 class UToolMenu;
+class SDockTab;
+class IDetailsView;
+class ISettingsSection;
 struct ISubsystemTreeItem;
 
 class FSubsystemBrowserModule : public IModuleInterface
 {
 public:
 	static const FName SubsystemBrowserTabName;
+	static const FName SubsystemBrowserNomadTabName;
 	static const FName SubsystemBrowserContextMenuName;
-public:
-	static FSubsystemBrowserModule& Get()
+
+	SUBSYSTEMBROWSER_API static FSubsystemBrowserModule& Get()
 	{
 		return FModuleManager::GetModuleChecked<FSubsystemBrowserModule>(TEXT("SubsystemBrowser"));
 	}
@@ -33,7 +38,7 @@ public:
 	/**
 	 * Register default subsystem categories
 	 */
-	void RegisterDefaultCategories();
+	SUBSYSTEMBROWSER_API void RegisterDefaultCategories();
 	/**
 	 * Register a new subsystem category
 	 */
@@ -51,11 +56,11 @@ public:
 	/**
 	 * Get a list of all custom dynamic columns
 	 */
-	const TArray<SubsystemColumnPtr>& GetDynamicColumns() const;
+	SUBSYSTEMBROWSER_API const TArray<SubsystemColumnPtr>& GetDynamicColumns() const;
 	/**
 	 *
 	 */
-	void RegisterDefaultDynamicColumns();
+	SUBSYSTEMBROWSER_API void RegisterDefaultDynamicColumns();
 	/**
 	 * Register a new custom dynamic column
 	 */
@@ -71,20 +76,19 @@ public:
 	static void AddPermanentColumns(TArray<SubsystemColumnPtr>& Columns);
 
 	/**
-	 * Open editor settings tab with plugin settings pre-selected
-	 */
-	void SummonPluginSettingsTab();
-
-	/**
 	 * Open subsystems tab
 	 */
-	void SummonSubsystemTab();
+	SUBSYSTEMBROWSER_API void SummonSubsystemTab();
 
 	/**
-	 * Callback that is called whenever an owner name is needed to be obtained for the subsystem
+	 * Open editor settings tab with plugin settings pre-selected
 	 */
-	DECLARE_DELEGATE_RetVal_OneParam(FString, FOnGetSubsystemOwnerName, UObject*);
-	static SUBSYSTEMBROWSER_API FOnGetSubsystemOwnerName OnGetSubsystemOwnerName;
+	SUBSYSTEMBROWSER_API void SummonPluginSettingsTab();
+
+	/**
+	 * Open subsystem settings panel
+	 */
+	SUBSYSTEMBROWSER_API void SummonSubsystemSettingsTab();
 
 	/**
 	 * Callback that is called whenever a tooltip for item needs to be generated
@@ -100,16 +104,31 @@ public:
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnGenerateMenu, TSharedRef<const ISubsystemTreeItem>, UToolMenu*);
 	static SUBSYSTEMBROWSER_API FOnGenerateMenu OnGenerateContextMenu;
 
-private:
-	static TSharedRef<class SDockTab> HandleTabManagerSpawnTab(const FSpawnTabArgs& Args);
-	static TSharedRef<class SWidget> CreateSubsystemBrowser(const FSpawnTabArgs& Args);
+	/**
+	 * Apply custom  subsystem  customizations to provided details view
+	 * @param DetailsView details view instance to patch
+	 * @param Usage
+	 */
+	static SUBSYSTEMBROWSER_API void CustomizeDetailsView(TSharedRef<IDetailsView> DetailsView, FName Usage);
 
-	// Saved instance of Settings section
-	TSharedPtr<class ISettingsSection> SettingsSection;
+protected:
+	void RegisterSettings();
+	void RegisterMenus();
+
+	/** Handles creating the subsystem browser tab. */
+	TSharedRef<SDockTab> HandleSpawnBrowserTab(const FSpawnTabArgs& Args);
+
+private:
+	// Is nomad mode enabled
+	bool bNomadModeActive = false;
 	// Instances of subsystem categories
 	TArray<SubsystemCategoryPtr> Categories;
 	// Instances of dynamic subsystem columns
 	TArray<SubsystemColumnPtr> DynamicColumns;
+
+
+	// Saved instance of Settings section
+	TSharedPtr<ISettingsSection> PluginSettingsSection;
 };
 
 template <typename TCategory, typename... TArgs>
@@ -124,7 +143,7 @@ void FSubsystemBrowserModule::RegisterDynamicColumn(TArgs&&... InArgs)
 	RegisterDynamicColumn(MakeShared<TColumn>(Forward<TArgs>(InArgs)...));
 }
 
-#if UE_BUILD_DEBUG
+#if UE_BUILD_DEBUG || defined(WITH_SB_HOST_PROJECT)
 DECLARE_LOG_CATEGORY_EXTERN(LogSubsystemBrowser, Log, All);
 #else
 DECLARE_LOG_CATEGORY_EXTERN(LogSubsystemBrowser, Log, Warning);

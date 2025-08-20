@@ -9,6 +9,8 @@
 #include "SubsystemBrowserSorting.h"
 #include "UI/SubsystemTableItem.h"
 #include "SubsystemBrowserStyle.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SListView.h"
 
 #define LOCTEXT_NAMESPACE "SubsystemBrowser"
 
@@ -52,7 +54,7 @@ TSharedPtr<SWidget> FSubsystemDynamicTextColumn::GenerateColumnWidget(TSharedRef
 		[
 			SNew(STextBlock)
 			.Font(this, &FSubsystemDynamicTextColumn::ExtractFont, Item)
-			.ColorAndOpacity(this, &FSubsystemDynamicTextColumn::ExtractColorIfEnabled, Item)
+			.ColorAndOpacity(this, &FSubsystemDynamicTextColumn::ExtractColor, Item)
 			.Text(this, &FSubsystemDynamicTextColumn::ExtractText, Item)
 			.ToolTipText(this, &FSubsystemDynamicTextColumn::ExtractTooltipText, Item)
 			.HighlightText(TableRow->HighlightText)
@@ -66,25 +68,16 @@ FText FSubsystemDynamicTextColumn::ExtractTooltipText(TSharedRef<const ISubsyste
 
 FSlateColor FSubsystemDynamicTextColumn::ExtractColor(TSharedRef<const ISubsystemTreeItem> Item) const
 {
+	const USubsystemBrowserSettings* Settings = USubsystemBrowserSettings::Get();
 	if (Item->IsStale())
 	{
-		return FSlateColor::UseSubduedForeground();
+		return Settings->GetStaleColor();
 	}
-	if (Item->IsGameModule() && !Item->IsSelected())
+	if (Item->IsSelected())
 	{
-		return FLinearColor(0.4f, 0.4f, 1.0f);
+		return Settings->GetSelectedColor();
 	}
-
 	return FSlateColor::UseForeground();
-}
-
-FSlateColor FSubsystemDynamicTextColumn::ExtractColorIfEnabled(TSharedRef<const ISubsystemTreeItem> Item) const
-{
-	if (USubsystemBrowserSettings::Get()->IsColoringEnabled())
-	{
-		return ExtractColor(Item);
-	}
-	return Item->IsStale() ? FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground();
 }
 
 FSlateFontInfo FSubsystemDynamicTextColumn::ExtractFont(TSharedRef<const ISubsystemTreeItem> Item) const
@@ -101,7 +94,7 @@ void FSubsystemDynamicTextColumn::SortItems(TArray<SubsystemTreeItemPtr>& RootIt
 
 #undef LOCTEXT_NAMESPACE
 
-#if ENABLE_SUBSYSTEM_BROWSER_EXAMPLES && SINCE_UE_VERSION(4, 27, 0)
+#if ENABLE_SUBSYSTEM_BROWSER_EXAMPLES && !UE_VERSION_OLDER_THAN(4, 27, 0)
 
 // 1. Create a new struct inheriting FSubsystemDynamicColumn
 

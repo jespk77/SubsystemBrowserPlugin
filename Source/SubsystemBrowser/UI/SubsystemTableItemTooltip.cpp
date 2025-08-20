@@ -1,7 +1,9 @@
 ﻿#include "UI/SubsystemTableItemTooltip.h"
 #include "SubsystemBrowserFlags.h"
 #include "SubsystemBrowserModule.h"
+#include "SubsystemBrowserSettings.h"
 #include "SubsystemBrowserStyle.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "SubsystemBrowser"
 
@@ -36,7 +38,7 @@ void SSubsystemTableItemTooltip::OnClosed()
 
 TSharedRef<SWidget> SSubsystemTableItemTooltip::CreateToolTipWidget(TSharedRef<SSubsystemTableItem> TableItem) const
 {
-	if (TableItem->Item.IsValid())
+	if (TableItem->Item.IsValid() && !TableItem->Item->IsStale())
 	{
 		FSubsystemTableItemTooltipBuilder TooltipBuilder(TableItem);
 		TableItem->Item->GenerateTooltip(TooltipBuilder);
@@ -46,14 +48,13 @@ TSharedRef<SWidget> SSubsystemTableItemTooltip::CreateToolTipWidget(TSharedRef<S
 
 		TSharedRef<SVerticalBox> OverallTooltipVBox = SNew(SVerticalBox);
 
-		// Top section (asset name, type, is checked out)
 		OverallTooltipVBox->AddSlot()
 						  .AutoHeight()
 						  .Padding(0, 0, 0, 4)
 		[
 			SNew(SBorder)
-					.Padding(6)
-					.BorderImage(FStyleHelper::GetBrush("ContentBrowser.TileViewTooltip.ContentBorder"))
+				.Padding(6)
+				.BorderImage(FStyleHelper::GetBrush("ContentBrowser.TileViewTooltip.ContentBorder"))
 			[
 				SNew(SVerticalBox)
 
@@ -68,8 +69,8 @@ TSharedRef<SWidget> SSubsystemTableItemTooltip::CreateToolTipWidget(TSharedRef<S
 					  .Padding(0, 0, 4, 0)
 					[
 						SNew(STextBlock)
-								.Text(TableItem->Item->GetDisplayName())
-								.Font(FStyleHelper::GetFontStyle("ContentBrowser.TileViewTooltip.NameFont"))
+							.Text(TableItem->Item->GetDisplayName())
+							.Font(FStyleHelper::GetFontStyle("ContentBrowser.TileViewTooltip.NameFont"))
 					]
 				]
 
@@ -104,6 +105,35 @@ TSharedRef<SWidget> SSubsystemTableItemTooltip::CreateToolTipWidget(TSharedRef<S
 			];
 		}
 
+		if (TooltipBuilder.UserTooltip.IsValid())
+		{
+			OverallTooltipVBox->AddSlot()
+						  .AutoHeight()
+						  .Padding(0, 4, 0, 0)
+			[
+				SNew(SBorder)
+					.Padding(6)
+					.BorderImage(FStyleHelper::GetBrush("ContentBrowser.TileViewTooltip.ContentBorder"))
+				[
+					SNew(SVerticalBox)
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(SHorizontalBox)
+
+						+ SHorizontalBox::Slot()
+						  .AutoWidth()
+						  .VAlign(VAlign_Center)
+						  .Padding(0, 0, 4, 0)
+						[
+							TooltipBuilder.UserTooltip.ToSharedRef()
+						]
+					]
+				]
+			];
+		}
+
 		return SNew(SBorder)
 				.Padding(6)
 				.BorderImage( FStyleHelper::GetBrush("ContentBrowser.TileViewTooltip.NonContentBorder") )
@@ -133,6 +163,24 @@ void FSubsystemTableItemTooltipBuilder::AddSecondary(const FText& Key, const FTe
 	AddBox(Secondary.ToSharedRef(), Key, Value, DisplayFlags);
 }
 
+void FSubsystemTableItemTooltipBuilder::SetUserTooltip(const FText& Value)
+{
+	SAssignNew(UserTooltip, STextBlock)
+		.Text(Value)
+		.ColorAndOpacity(FSlateColor::UseForeground())
+		.WrapTextAt(400.0f);
+}
+
+bool FSubsystemTableItemTooltipBuilder::HasAnyData() const
+{
+	return Primary.IsValid() || Secondary.IsValid() || UserTooltip.IsValid();
+}
+
+bool FSubsystemTableItemTooltipBuilder::IsInAdvancedMode() const
+{
+	return USubsystemBrowserSettings::Get()->ShouldShowDetailsTooltips(); // || IsKeyPressed(LCtrl/LAlt)?
+}
+
 void FSubsystemTableItemTooltipBuilder::AddBox(TSharedRef<SVerticalBox> Target, const FText& Key, const FText& Value, uint32 DisplayFlags)
 {
 	const bool bImportant = (DisplayFlags & DF_IMPORTANT) != 0;
@@ -147,21 +195,24 @@ void FSubsystemTableItemTooltipBuilder::AddBox(TSharedRef<SVerticalBox> Target, 
 	[
 		SNew(SHorizontalBox)
 		+ SHorizontalBox::Slot()
-		  .AutoWidth()
-		  .Padding(0, 0, 4, 0)
+			.AutoWidth()
+			.Padding(0, 0, 4, 0)
 		[
-			SNew(STextBlock).Text(FText::Format(LOCTEXT("SubsystemItemTooltipFormat", "{0}:"), Key))
-							.ColorAndOpacity( bImportant ? ImportantStyle.GetSubduedForegroundColor() : FSlateColor::UseSubduedForeground())
+			SNew(STextBlock)
+				.Text(FText::Format(LOCTEXT("SubsystemItemTooltipFormat", "{0}:"), Key))
+				.ColorAndOpacity( bImportant ? ImportantStyle.GetSubduedForegroundColor() : FSlateColor::UseSubduedForeground())
 		]
 
 		+ SHorizontalBox::Slot()
-		.AutoWidth()
+			.AutoWidth()
 		[
-			SNew(STextBlock).Text(Value)
-							.ColorAndOpacity(bImportant ? ImportantStyle.GetForegroundColor() : FSlateColor::UseForeground())
-							.HighlightText(bHighlightable ? Item->HighlightText : FText())
-							.WrapTextAt(700.0f)
+			SNew(STextBlock)
+				.Text(Value)
+				.ColorAndOpacity(bImportant ? ImportantStyle.GetForegroundColor() : FSlateColor::UseForeground())
+				.HighlightText(bHighlightable ? Item->HighlightText : FText())
+				.WrapTextAt(400.0f)
 		]
+
 	];
 }
 

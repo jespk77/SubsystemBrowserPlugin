@@ -7,17 +7,21 @@
 #include "SubsystemBrowserSettings.h"
 #include "SubsystemBrowserStyle.h"
 #include "SubsystemBrowserUtils.h"
+#include "Components/SlateWrapperTypes.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Views/STableRow.h"
+#include "Widgets/Input/SComboButton.h"
 #include "SlateOptMacros.h"
 #include "ToolMenus.h"
-#include "Components/SlateWrapperTypes.h"
 #include "Editor.h"
 #include "Engine/MemberReference.h"
-#include "HAL/PlatformApplicationMisc.h"
 #include "IDetailsView.h"
+#include "PropertyEditorModule.h"
+#include "HAL/PlatformApplicationMisc.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 
 #define LOCTEXT_NAMESPACE "SubsystemBrowser"
 
@@ -29,6 +33,9 @@ SSubsystemBrowserPanel::~SSubsystemBrowserPanel()
 {
 	FEditorDelegates::PostPIEStarted.RemoveAll(this);
 	FEditorDelegates::PrePIEEnded.RemoveAll(this);
+
+	GEngine->OnWorldAdded().RemoveAll(this);
+	GEngine->OnWorldDestroyed().RemoveAll(this);
 }
 
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
@@ -37,6 +44,10 @@ void SSubsystemBrowserPanel::Construct(const FArguments& InArgs)
 	// Automatically switch to pie world and back
 	FEditorDelegates::PostPIEStarted.AddSP(this, &SSubsystemBrowserPanel::HandlePIEStart);
 	FEditorDelegates::PrePIEEnded.AddSP(this, &SSubsystemBrowserPanel::HandlePIEEnd);
+
+	// World load/unload events
+	GEngine->OnWorldAdded().AddSP(this, &SSubsystemBrowserPanel::HandleWorldChange);
+	GEngine->OnWorldDestroyed().AddSP(this, &SSubsystemBrowserPanel::HandleWorldChange);
 
 	// Update initial settings to apply custom category registrations
 	USubsystemBrowserSettings* Settings = USubsystemBrowserSettings::Get();
@@ -72,10 +83,6 @@ void SSubsystemBrowserPanel::Construct(const FArguments& InArgs)
 	// Build the details viewer
 	DetailsView = CreateDetails();
 	check(DetailsView.IsValid());
-
-	// Context menu
-
-	FOnContextMenuOpening ContextMenuEvent = FOnContextMenuOpening::CreateSP(this, &SSubsystemBrowserPanel::ConstructSubsystemContextMenu);
 
 	// Build the actual subsystem browser view panel
 	ChildSlot
@@ -128,6 +135,7 @@ void SSubsystemBrowserPanel::Construct(const FArguments& InArgs)
 						]
 					]
 				]
+				
 			]
 		]
 
@@ -149,6 +157,27 @@ void SSubsystemBrowserPanel::Construct(const FArguments& InArgs)
 						.HintText(LOCTEXT("FilterSearchHint", "Search Subsystems"))
 						.OnTextChanged(this, &SSubsystemBrowserPanel::SetFilterText)
 				]
+
+				//Refresh Button
+				+SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Left)
+				.Padding(4, 0, 0, 0)
+				[
+					SNew(SButton)
+					.HAlign(HAlign_Right)
+					.VAlign(VAlign_Center)
+					.ButtonStyle(FStyleHelper::GetWidgetStylePtr<FButtonStyle>("SimpleButton"))
+					.ContentPadding(FMargin(1, 0))
+					.OnClicked(this, &SSubsystemBrowserPanel::RequestRefresh)
+					.ToolTipText(LOCTEXT("SubsystemListRefresh", "Refresh displayed subsystems"))
+					[
+						SNew(SImage)
+						.Image(FStyleHelper::GetBrush("Icons.Refresh"))
+						.ColorAndOpacity(FSlateColor::UseForeground())
+					]
+				]
 			]
 		]
 
@@ -162,7 +191,7 @@ void SSubsystemBrowserPanel::Construct(const FArguments& InArgs)
 			[
 				SAssignNew(BrowserSplitter, SSplitter)
 				.MinimumSlotHeight(100.f)
-				.Orientation(Orient_Vertical)
+				.Orientation(Settings->GetSeparatorOrientation() == ESubsystemBrowserSplitterOrientation::Horizontal ? Orient_Horizontal : Orient_Vertical)
 #if UE_VERSION_OLDER_THAN(5, 0, 0)
 				.Style(FStyleHelper::GetWidgetStylePtr<FSplitterStyle>("Splitter"))
 #else
@@ -190,7 +219,7 @@ void SSubsystemBrowserPanel::Construct(const FArguments& InArgs)
 							.OnSelectionChanged(this, &SSubsystemBrowserPanel::OnSelectionChanged)
 							.OnExpansionChanged(this, &SSubsystemBrowserPanel::OnExpansionChanged)
 							.OnMouseButtonDoubleClick(this, &SSubsystemBrowserPanel::OnTreeViewMouseButtonDoubleClick)
-							.OnContextMenuOpening(ContextMenuEvent)
+							.OnContextMenuOpening(this, &SSubsystemBrowserPanel::ConstructSubsystemContextMenu)
 							.HighlightParentNodesForSelection(true)
 							.ClearSelectionOnClick(true)
 							.HeaderRow(HeaderRowWidget.ToSharedRef())
@@ -273,6 +302,8 @@ END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 void SSubsystemBrowserPanel::Tick(const FGeometry& AllotedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SSubsystemBrowserPanel::Tick);
+
 	SCompoundWidget::Tick(AllotedGeometry, InCurrentTime, InDeltaTime);
 
 	if (bNeedsRefresh)
@@ -285,6 +316,8 @@ void SSubsystemBrowserPanel::Tick(const FGeometry& AllotedGeometry, const double
 
 	if (bSortDirty)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SSubsystemBrowserPanel::RequestTreeRefresh);
+
 		// SortItems(RootTreeItems);
 		for (const auto& Pair : TreeItemMap)
 		{
@@ -298,30 +331,46 @@ void SSubsystemBrowserPanel::Tick(const FGeometry& AllotedGeometry, const double
 
 	if (bNeedsColumnRefresh)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SSubsystemBrowserPanel::RefreshColumns);
+
 		bNeedsColumnRefresh = false;
 		HeaderRowWidget->RefreshColumns();
 	}
 
-	if (bNeedRefreshDetails)
+	if (bNeedRefreshDetails || PendingSelectionObject.IsSet())
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(SSubsystemBrowserPanel::RefreshDetails);
+
 		if (DetailsView.IsValid())
 		{
-			DetailsView->ForceRefresh();
+			if (PendingSelectionObject.IsSet())
+			{
+				DetailsView->SetObject(PendingSelectionObject.GetValue().Get(), true);
+			}
+			else
+			{
+				DetailsView->ForceRefresh();
+			}
 		}
+
+		PendingSelectionObject.Reset();
 		bNeedRefreshDetails = false;
+	}
+
+	if (bNeedsExpansionSettingsSave)
+	{
+		USubsystemBrowserSettings::Get()->SetTreeExpansionStates(GetParentsExpansionState());
+		bNeedsExpansionSettingsSave = false;
 	}
 }
 
 void SSubsystemBrowserPanel::Populate()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SSubsystemBrowserPanel::Populate);
+
 	TGuardValue<bool> ReentrantGuard(bIsReentrant, true);
 
 	TMap<FSubsystemTreeItemID, bool> ExpansionStateInfo = GetParentsExpansionState();
-	if (!bLoadedExpansionSettings)
-	{// load settings only on first populate
-		USubsystemBrowserSettings::Get()->LoadTreeExpansionStates(ExpansionStateInfo);
-		bLoadedExpansionSettings = true;
-	}
 
 	const FSubsystemTreeItemID SelectedItem = GetFirstSelectedItemId();
 
@@ -330,18 +379,31 @@ void SSubsystemBrowserPanel::Populate()
 		FilteredSubsystemsCount = 0;
 		EmptyTreeItems();
 		ResetSelectedObject();
-
+		
 		SubsystemModel->GetFilteredCategories(RootTreeItems);
-		for (SubsystemTreeItemPtr Category : RootTreeItems)
+		for (SubsystemTreeItemPtr CategoryItem : RootTreeItems)
 		{
-			TreeItemMap.Add(Category->GetID(), Category);
-
-			SubsystemModel->GetFilteredSubsystems(Category, Category->Children);
-			for (SubsystemTreeItemPtr  Child : Category->GetChildren())
+			if (!bLoadedExpansionSettings || !ExpansionStateInfo.Num())
 			{
-				TreeItemMap.Add(Child->GetID(), Child);
+				bool bExpanded = USubsystemBrowserSettings::Get()->GetTreeExpansionState(CategoryItem->GetID());
+
+				CategoryItem->bExpanded = bExpanded;
+				ExpansionStateInfo.Add(CategoryItem->GetID(), bExpanded);
+			}
+
+			TreeItemMap.Add(CategoryItem->GetID(), CategoryItem);
+
+			SubsystemModel->GetFilteredSubsystems(CategoryItem, CategoryItem->Children);
+			for (SubsystemTreeItemPtr  SubsystemItem : CategoryItem->GetChildren())
+			{
+				TreeItemMap.Add(SubsystemItem->GetID(), SubsystemItem);
 
 				FilteredSubsystemsCount ++;
+				
+				if (USubsystemBrowserSettings::Get()->ShouldShowSubobjbects())
+				{
+					SubsystemModel->GetSubsystemSubobjects(SubsystemItem, SubsystemItem->Children);
+				}
 			}
 		}
 
@@ -366,6 +428,8 @@ void SSubsystemBrowserPanel::Populate()
 	TreeWidget->RequestTreeRefresh();
 
 	bNeedsRefresh = false;
+
+	bLoadedExpansionSettings = true;
 }
 
 void SSubsystemBrowserPanel::EmptyTreeItems()
@@ -421,11 +485,11 @@ FText SSubsystemBrowserPanel::GetFilterStatusText() const
 	{
 		if ( FilteredSubsystemsCount == 0)
 		{   // all subsystems were filtered out
-			return FText::Format( LOCTEXT("ShowSubsystemsCounterFmt", "No matching subsystems out of {0} total"), FText::AsNumber( SubsystemTotalCount ) );
+			return FText::Format( LOCTEXT("ShowNoSubsystemsCounterFmt", "No matching subsystems out of {0} total"), FText::AsNumber( SubsystemTotalCount ) );
 		}
 		else
 		{   // got something to display
-			return FText::Format( LOCTEXT("ShowingOnlySomeActorsFmt", "Showing {0} of {1} subsystems"), FText::AsNumber( FilteredSubsystemsCount ), FText::AsNumber( SubsystemTotalCount ) );
+			return FText::Format( LOCTEXT("ShowingOnlySomeSubsystemsFmt", "Showing {0} of {1} subsystems"), FText::AsNumber( FilteredSubsystemsCount ), FText::AsNumber( SubsystemTotalCount ) );
 		}
 	}
 }
@@ -451,10 +515,10 @@ FSlateColor SSubsystemBrowserPanel::GetFilterStatusTextColor() const
 
 void SSubsystemBrowserPanel::BrowserSplitterFinishedResizing()
 {
-#if SINCE_UE_VERSION(5, 0, 0)
-	float NewValue = BrowserSplitter->SlotAt(0).GetSizeValue();
-#else
+#if UE_VERSION_OLDER_THAN(5, 0, 0)
 	float NewValue = BrowserSplitter->SlotAt(0).SizeValue.Get();
+#else
+	float NewValue = BrowserSplitter->SlotAt(0).GetSizeValue();
 #endif
 	USubsystemBrowserSettings::Get()->SetSeparatorLocation(NewValue);
 }
@@ -477,7 +541,7 @@ TSharedRef<SWidget> SSubsystemBrowserPanel::GetViewOptionsButtonContent()
 
 	MenuBuilder.BeginSection(NAME_None, LOCTEXT("ViewColumnsGroup", "Columns"));
 	{
-		if (SubsystemModel->GetNumDynamicColumns() > Settings->MaxColumnTogglesToShow)
+		if (SubsystemModel->GetNumDynamicColumns() > Settings->GetMaxColumnTogglesToShow())
 		{
 			MenuBuilder.AddSubMenu(
 				LOCTEXT("ChooseColumnSubMenu", "Choose Columns"),
@@ -494,7 +558,7 @@ TSharedRef<SWidget> SSubsystemBrowserPanel::GetViewOptionsButtonContent()
 
 	MenuBuilder.BeginSection(NAME_None, LOCTEXT("ViewCategoryGroup", "Categories"));
 	{
-		if (SubsystemModel->GetNumCategories() > Settings->MaxCategoryTogglesToShow)
+		if (SubsystemModel->GetNumCategories() > Settings->GetMaxCategoryTogglesToShow())
 		{
 			MenuBuilder.AddSubMenu(
 				LOCTEXT("ChooseCategorySubMenu", "Choose Category"),
@@ -512,18 +576,6 @@ TSharedRef<SWidget> SSubsystemBrowserPanel::GetViewOptionsButtonContent()
 	MenuBuilder.BeginSection(NAME_None, LOCTEXT("ViewOptionsGroup", "Options"));
 	{
 		MenuBuilder.AddMenuEntry(
-			LOCTEXT("ToggleColoring", "Table Coloring"),
-			LOCTEXT("ToggleColoring_Tooltip", "Toggles coloring in subsystem browser tree."),
-			FSlateIcon(),
-			FUIAction(
-				FExecuteAction::CreateSP(this, &SSubsystemBrowserPanel::ToggleTableColoring),
-				FCanExecuteAction(),
-				FIsActionChecked::CreateUObject(Settings, &USubsystemBrowserSettings::IsColoringEnabled)
-			),
-			NAME_None,
-			EUserInterfaceActionType::ToggleButton
-		);
-		MenuBuilder.AddMenuEntry(
 			LOCTEXT("ToggleGameOnly", "Only Game Modules"),
 			LOCTEXT("ToggleGameOnly_Tooltip", "Show only subsystems that are within Game Modules."),
 			FSlateIcon(),
@@ -536,13 +588,13 @@ TSharedRef<SWidget> SSubsystemBrowserPanel::GetViewOptionsButtonContent()
 			EUserInterfaceActionType::ToggleButton
 		);
 		MenuBuilder.AddMenuEntry(
-			LOCTEXT("TogglePluginOnly", "Only Plugin Modules"),
-			LOCTEXT("TogglePluginOnly_Tooltip", "Show only subsystems that are within plugins."),
+			LOCTEXT("ToggleViewableOnly", "Only With Properties"),
+			LOCTEXT("ToggleViewableOnly_Tooltip", "Show only subsystems that have viewable elements."),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateSP(this, &SSubsystemBrowserPanel::ToggleShouldShowOnlyPlugins),
+				FExecuteAction::CreateSP(this, &SSubsystemBrowserPanel::ToggleShouldShowOnlyViewable),
 				FCanExecuteAction(),
-				FIsActionChecked::CreateUObject(Settings, &USubsystemBrowserSettings::ShouldShowOnlyPlugins)
+				FIsActionChecked::CreateUObject(Settings, &USubsystemBrowserSettings::ShouldShowOnlyViewable)
 			),
 			NAME_None,
 			EUserInterfaceActionType::ToggleButton
@@ -552,15 +604,28 @@ TSharedRef<SWidget> SSubsystemBrowserPanel::GetViewOptionsButtonContent()
 			LOCTEXT("ToggleHiddenProps_Tooltip", "Enforces display of all hidden object properties in details panel."),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateSP(this, &SSubsystemBrowserPanel::ToggleShowHiddenProperties),
+				FExecuteAction::CreateSP(this, &SSubsystemBrowserPanel::ToggleForceHiddenPropertyVisibility),
 				FCanExecuteAction(),
-				FIsActionChecked::CreateUObject(Settings, &USubsystemBrowserSettings::ShouldShowHiddenProperties)
+				FIsActionChecked::CreateUObject(Settings, &USubsystemBrowserSettings::ShouldForceHiddenPropertyVisibility)
 			),
 			NAME_None,
 			EUserInterfaceActionType::ToggleButton
 		);
+		if (USubsystemBrowserSettings::Get()->ShouldUseSubsystemSettings())
+		{
+			MenuBuilder.AddMenuEntry(
+        		LOCTEXT("OpenSubsystemSettingsPanel", "Subsystem Settings"),
+        		LOCTEXT("OpenSubsystemSettingsPanel_Tooltip", "Open subsystem settings panel."),
+        		FStyleHelper::GetSlateIcon(FSubsystemBrowserStyle::PanelIconName),
+        		FUIAction(
+        			FExecuteAction::CreateSP(this, &SSubsystemBrowserPanel::ShowSubsystemSettingsTab)
+        		),
+        		NAME_None,
+        		EUserInterfaceActionType::Button
+	        );
+		}
 		MenuBuilder.AddMenuEntry(
-			LOCTEXT("OpenSettingsPanel", "All Options"),
+			LOCTEXT("OpenSettingsPanel", "Browser Settings"),
 			LOCTEXT("OpenSettingsPanel_Tooltip", "Open plugin settings panel."),
 			FStyleHelper::GetSlateIcon("EditorPreferences.TabIcon"),
 			FUIAction(
@@ -700,16 +765,16 @@ void SSubsystemBrowserPanel::OnExpansionChanged(SubsystemTreeItemPtr Item, bool 
 {
 	Item->bExpanded = bIsItemExpanded;
 
-	if (FSubsystemTreeCategoryItem* Folder = Item->GetAsCategoryDescriptor())
+	if (Item->CanHaveChildren())
 	{
-		for (SubsystemTreeItemPtr Child : Folder->GetChildren())
+		for (SubsystemTreeItemPtr Child : Item->GetChildren())
 		{
 			Child->bExpanded = bIsItemExpanded;
 		}
 	}
 
 	// Save expansion states
-	USubsystemBrowserSettings::Get()->SetTreeExpansionStates(GetParentsExpansionState());
+	bNeedsExpansionSettingsSave = true;
 
 	RefreshView();
 }
@@ -741,9 +806,9 @@ void SSubsystemBrowserPanel::ToggleTableColoring()
 	RefreshView();
 }
 
-void SSubsystemBrowserPanel::ToggleShowHiddenProperties()
+void SSubsystemBrowserPanel::ToggleForceHiddenPropertyVisibility()
 {
-	USubsystemBrowserSettings::Get()->ToggleShouldShowHiddenProperties();
+	USubsystemBrowserSettings::Get()->ToggleForceHiddenPropertyVisibility();
 
 	RefreshView();
 	RecreateDetails();
@@ -763,9 +828,27 @@ void SSubsystemBrowserPanel::ToggleShouldShowOnlyPlugins()
 	FullRefresh();
 }
 
+void SSubsystemBrowserPanel::ToggleShouldShowOnlyViewable()
+{
+	USubsystemBrowserSettings::Get()->ToggleShouldShowOnlyViewable();
+
+	FullRefresh();
+}
+
 void SSubsystemBrowserPanel::ShowPluginSettingsTab() const
 {
 	FSubsystemBrowserModule::Get().SummonPluginSettingsTab();
+}
+
+void SSubsystemBrowserPanel::ShowSubsystemSettingsTab() const
+{
+	FSubsystemBrowserModule::Get().SummonSubsystemSettingsTab();
+}
+
+FReply SSubsystemBrowserPanel::RequestRefresh()
+{
+	FullRefresh();
+	return FReply::Handled();
 }
 
 void SSubsystemBrowserPanel::OnSelectionChanged(const SubsystemTreeItemPtr Item, ESelectInfo::Type SelectInfo)
@@ -792,61 +875,16 @@ const FSlateBrush* SSubsystemBrowserPanel::GetWorldsMenuBrush() const
 
 FText SSubsystemBrowserPanel::GetCurrentWorldText() const
 {
-	FFormatNamedArguments Args;
-	Args.Add(TEXT("World"), GetWorldDescription(SubsystemModel->GetCurrentWorld().Get()));
-	return FText::Format(LOCTEXT("WorldsSelectButton", "World: {World}"), Args);
-}
-
-FText SSubsystemBrowserPanel::GetWorldDescription(UWorld* World) const
-{
-	FText Description;
-	if(World)
+	if (SubsystemModel->GetCurrentWorld().IsValid())
 	{
-		FText PostFix;
-		const FWorldContext* WorldContext = nullptr;
-		for (const FWorldContext& Context : GEngine->GetWorldContexts())
-		{
-			if(Context.World() == World)
-			{
-				WorldContext = &Context;
-				break;
-			}
-		}
-
-		if (World->WorldType == EWorldType::PIE)
-		{
-			switch(World->GetNetMode())
-			{
-				case NM_Client:
-					if (WorldContext)
-					{
-						PostFix = FText::Format(LOCTEXT("ClientPostfixFormat", "(Client {0})"), FText::AsNumber(WorldContext->PIEInstance - 1));
-					}
-					else
-					{
-						PostFix = LOCTEXT("ClientPostfix", "(Client)");
-					}
-					break;
-				case NM_DedicatedServer:
-				case NM_ListenServer:
-					PostFix = LOCTEXT("ServerPostfix", "(Server)");
-					break;
-				case NM_Standalone:
-					PostFix = LOCTEXT("PlayInEditorPostfix", "(Play In Editor)");
-					break;
-				default:
-					break;
-			}
-		}
-		else if(World->WorldType == EWorldType::Editor)
-		{
-			PostFix = LOCTEXT("EditorPostfix", "(Editor)");
-		}
-
-		Description = FText::Format(LOCTEXT("WorldFormat", "{0} {1}"), FText::FromString(World->GetFName().GetPlainNameString()), PostFix);
+		FFormatNamedArguments Args;
+		Args.Add(TEXT("World"), FSubsystemBrowserUtils::GetWorldDescription(SubsystemModel->GetCurrentWorld().Get()));
+		return FText::Format(LOCTEXT("WorldsSelectButton", "World: {World}"), Args);
 	}
-
-	return Description;
+	else
+	{
+		return LOCTEXT("WorldsSelectButton_Bad", "World: Invalid");
+	}
 }
 
 void SSubsystemBrowserPanel::OnSelectWorld(TWeakObjectPtr<UWorld> InWorld)
@@ -874,7 +912,7 @@ TSharedRef<SWidget> SSubsystemBrowserPanel::GetWorldsButtonContent()
 		if (World && (World->WorldType == EWorldType::PIE || Context.WorldType == EWorldType::Editor))
 		{
 			MenuBuilder.AddMenuEntry(
-				GetWorldDescription(World),
+				FSubsystemBrowserUtils::GetWorldDescription(World),
 				LOCTEXT("ChooseWorldToolTip", "Display subsystems for this world."),
 				FSlateIcon(),
 				FUIAction(
@@ -928,36 +966,45 @@ void SSubsystemBrowserPanel::HandlePIEEnd(const bool bIsSimulating)
 	OnSelectWorld(EditorWorld);
 }
 
+void SSubsystemBrowserPanel::HandleWorldChange(UWorld* InWorld)
+{
+	UE_LOG(LogSubsystemBrowser, Log, TEXT("On World Changed"));
+
+	// Automatically switch to the newest editor world after opening level
+	if (InWorld && InWorld->WorldType == EWorldType::Editor)
+	{
+		OnSelectWorld(InWorld);
+	}
+}
 
 TSharedRef<IDetailsView> SSubsystemBrowserPanel::CreateDetails()
 {
-	bool bShowHidden = USubsystemBrowserSettings::Get()->ShouldShowHiddenProperties();
+	bool bHiddenPropertyVisibility = USubsystemBrowserSettings::Get()->ShouldForceHiddenPropertyVisibility();
 
 	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.ViewIdentifier = TEXT("SubsystemBrowserDetailsPanel");
 	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
-	DetailsViewArgs.ViewIdentifier = TEXT("SubsystemBrowserDetailsView");
 	DetailsViewArgs.DefaultsOnlyVisibility = EEditDefaultsOnlyNodeVisibility::Show;
 	DetailsViewArgs.bShowPropertyMatrixButton = false;
 	DetailsViewArgs.bShowAnimatedPropertiesOption = false;
 	DetailsViewArgs.bShowKeyablePropertiesOption = false;
 	DetailsViewArgs.bHideSelectionTip = true;
-	DetailsViewArgs.bAllowFavoriteSystem = false; // no favorites here
+	DetailsViewArgs.bAllowFavoriteSystem = false;
+	DetailsViewArgs.bUpdatesFromSelection = false;
+	DetailsViewArgs.bLockable = false;
+	DetailsViewArgs.bShowOptions = true;
 	// show All properties. possibly apply custom property filter or custom checkbox.
 	// but there is no way to change its value via IDetailsView interface
 	// so show all and filter visibility by IsPropertyVisible
-	DetailsViewArgs.bForceHiddenPropertyVisibility = bShowHidden;
+	DetailsViewArgs.bForceHiddenPropertyVisibility = bHiddenPropertyVisibility;
 
-	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	TSharedRef<IDetailsView> DetailViewWidget = EditModule.CreateDetailView( DetailsViewArgs );
+	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>(TEXT("PropertyEditor"));
+	TSharedRef<IDetailsView> DetailViewWidget = EditModule.CreateDetailView(DetailsViewArgs);
 
-	DetailViewWidget->SetIsPropertyEditingEnabledDelegate(FIsPropertyEditingEnabled::CreateSP(this, &SSubsystemBrowserPanel::IsDetailsPropertyEditingEnabled));
-	DetailViewWidget->SetIsPropertyReadOnlyDelegate(FIsPropertyReadOnly::CreateSP(this, &SSubsystemBrowserPanel::IsDetailsPropertyReadOnly));
-	DetailViewWidget->SetIsPropertyVisibleDelegate(FIsPropertyVisible::CreateSP(this, &SSubsystemBrowserPanel::IsDetailsPropertyVisible));
+	DetailViewWidget->SetIsPropertyVisibleDelegate(FIsPropertyVisible::CreateStatic(&SSubsystemBrowserPanel::IsDetailsPropertyVisible));
+	DetailViewWidget->SetIsPropertyReadOnlyDelegate(FIsPropertyReadOnly::CreateStatic(&SSubsystemBrowserPanel::IsDetailsPropertyReadOnly));
 
-	// DetailViewWidget->SetCustomFilterLabel(LOCTEXT("ShowAllParameters", "Show All Parameters"));
-	// DetailViewWidget->SetCustomFilterDelegate(FSimpleDelegate::CreateSP(this, &SSubsystemBrowserPanel::ToggleShowingOnlyAllowedProperties));
-	// DetailViewWidget->SetIsPropertyVisibleDelegate(FIsPropertyVisible::CreateSP(this, &SSubsystemBrowserPanel::GetIsPropertyVisible));
-	// DetailViewWidget->SetIsCustomRowVisibleDelegate(FIsCustomRowVisible::CreateSP(this, &SSubsystemBrowserPanel::GetIsRowVisible));
+	FSubsystemBrowserModule::CustomizeDetailsView(DetailViewWidget, TEXT("SubsystemBrowserPanel"));
 
 	return DetailViewWidget;
 }
@@ -981,6 +1028,8 @@ void SSubsystemBrowserPanel::RecreateDetails()
 
 void SSubsystemBrowserPanel::SetSelectedObject(SubsystemTreeItemPtr Item)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SSubsystemBrowserPanel::SetSelectedObject);
+
 	UObject* InObject = Item.IsValid() ? Item->GetObjectForDetails() : nullptr;
 	UE_LOG(LogSubsystemBrowser, Log, TEXT("Selected object %s"), *GetNameSafe(InObject));
 
@@ -988,66 +1037,82 @@ void SSubsystemBrowserPanel::SetSelectedObject(SubsystemTreeItemPtr Item)
 
 	if (DetailsView.IsValid())
 	{
-		DetailsView->SetObject(InObject);
+		PendingSelectionObject = InObject;
 		RefreshDetails();
 	}
 }
 
 void SSubsystemBrowserPanel::ResetSelectedObject()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SSubsystemBrowserPanel::ResetSelectedObject);
+
 	UE_LOG(LogSubsystemBrowser, Log, TEXT("Reset selected object"));
 
 	SubsystemModel->NotifySelected(nullptr);
 
 	if (DetailsView.IsValid())
 	{
-		DetailsView->SetObject(nullptr);
+		PendingSelectionObject = nullptr;
 		RefreshDetails();
 	}
 }
 
-bool SSubsystemBrowserPanel::IsDetailsPropertyEditingEnabled()
+bool SSubsystemBrowserPanel::IsDetailsPropertyVisible(const FPropertyAndParent& InProperty)
 {
-	// Always allow editing
-	return true;
+	const FProperty* Property = InProperty.ParentProperties.Num() > 0 ? InProperty.ParentProperties.Last() : &InProperty.Property;
+
+	// always hide blueprint delegate properties
+	if (Property->IsA(FDelegateProperty::StaticClass()) || Property->IsA(FMulticastDelegateProperty::StaticClass()))
+	{
+		return false;
+	}
+
+	if (Property->FindMetaData(FSubsystemBrowserUserMeta::MD_SBHidden) != nullptr)
+	{
+		return false;
+	}
+
+	const USubsystemBrowserSettings* Settings = USubsystemBrowserSettings::Get();
+	if (Settings->ShouldForceHiddenPropertyVisibility())
+	{
+		// hidden properties filter
+		if (Settings->ShouldShowAnyProperties())
+		{
+			return true;
+		}
+
+		// hidden config properties filter
+		if (Property->HasAnyPropertyFlags(CPF_Config) && Settings->ShouldShowAnyConfigProperties())
+		{
+			return true;
+		}
+	}
+
+	// by default any property with EDIT can be edited
+	return Property->HasAnyPropertyFlags(CPF_Edit);
 }
 
 bool SSubsystemBrowserPanel::IsDetailsPropertyReadOnly(const FPropertyAndParent& InProperty)
 {
-	if (USubsystemBrowserSettings::Get()->ShouldEditAnyProperties())
-	{
-		return false;
-	}
-
 	const FProperty* Property = InProperty.ParentProperties.Num() > 0 ? InProperty.ParentProperties.Last() : &InProperty.Property;
 
-	bool bReadOnly = Property->HasAnyPropertyFlags(CPF_EditConst) || !Property->HasAnyPropertyFlags(CPF_Edit);
-
-	if (Property->HasAnyPropertyFlags(CPF_Config))
-	{ // config always editable
-		return false;
-	}
-
-
-
-	return bReadOnly;
-}
-
-bool SSubsystemBrowserPanel::IsDetailsPropertyVisible(const FPropertyAndParent& InProperty)
-{
-	if (USubsystemBrowserSettings::Get()->ShouldShowHiddenProperties())
+	const USubsystemBrowserSettings* Settings = USubsystemBrowserSettings::Get();
+	if (Settings->ShouldForceHiddenPropertyVisibility())
 	{
-		return true;
+		if (Settings->ShouldEditAnyProperties())
+		{
+			return false;
+		}
+
+		// allow editing hidden config properties
+		if (Property->HasAnyPropertyFlags(CPF_Config) && Settings->ShouldEditAnyConfigProperties())
+		{
+			return false;
+		}
 	}
 
-	const FProperty* Property = InProperty.ParentProperties.Num() > 0 ? InProperty.ParentProperties.Last() : &InProperty.Property;
-
-	if (CastField<FDelegateProperty>(Property) || CastField<FMulticastDelegateProperty>(Property))
-	{ // hide blueprint delegate properties
-		return false;
-	}
-
-	return true;
+	// by default any property with EditConst or DisableEditOnInstance is readonly (as SS is an instance)
+	return Property->HasAnyPropertyFlags(CPF_EditConst|CPF_DisableEditOnInstance);
 }
 
 SubsystemTreeItemPtr SSubsystemBrowserPanel::GetFirstSelectedItem() const
@@ -1084,7 +1149,7 @@ TMap<FSubsystemTreeItemID, bool> SSubsystemBrowserPanel::GetParentsExpansionStat
 
 	for (const auto& Pair : TreeItemMap)
 	{
-		if (Pair.Value->GetChildren().Num() > 0)
+		if (Pair.Value->GetNumChildren() > 0)
 		{
 			ExpansionStates.Add(Pair.Key, Pair.Value->bExpanded);
 		}
@@ -1106,6 +1171,19 @@ void SSubsystemBrowserPanel::SetParentsExpansionState(const TMap<FSubsystemTreeI
 			TreeWidget->SetItemExpansion(Item, bExpanded);
 		}
 	}
+}
+
+void SSubsystemBrowserPanel::ResetParentsExpansionState()
+{
+	for (const auto& Pair : TreeItemMap)
+	{
+		if (Pair.Value->GetNumChildren() > 0)
+		{
+			Pair.Value->bExpanded = true;
+		}
+	}
+
+	bNeedsRefresh = true;
 }
 
 TSharedPtr<SWidget> SSubsystemBrowserPanel::ConstructSubsystemContextMenu()
@@ -1141,6 +1219,16 @@ bool SSubsystemBrowserPanel::HasSelectedSubsystem() const
 
 void SSubsystemBrowserPanel::OnSettingsChanged(FName InPropertyName)
 {
+	if (InPropertyName == NAME_All)
+	{
+		bFullRefresh = true;
+		RefreshView();
+		RefreshColumns();
+		RecreateDetails();
+		ResetParentsExpansionState();
+		return;
+	}
+
 	if (FProperty* Property = USubsystemBrowserSettings::StaticClass()->FindPropertyByName(InPropertyName))
 	{
 		if (Property->HasMetaData(FSubsystemBrowserConfigMeta::MD_ConfigAffectsView))

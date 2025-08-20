@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Model/SubsystemBrowserDescriptor.h"
+#include "Widgets/Views/SHeaderRow.h"
 
 /* Represents a configurable column */
 struct SUBSYSTEMBROWSER_API FSubsystemDynamicColumn : public TSharedFromThis<FSubsystemDynamicColumn>
@@ -86,8 +87,6 @@ protected:
 	virtual FText ExtractTooltipText(TSharedRef<const ISubsystemTreeItem> Item) const;
 	/* get color and opacity of text for specified item */
 	virtual FSlateColor ExtractColor(TSharedRef<const ISubsystemTreeItem> Item) const;
-	/* internal */
-	FSlateColor ExtractColorIfEnabled(TSharedRef<const ISubsystemTreeItem> Item) const;
 	/* get font of text for specified item */
 	virtual FSlateFontInfo ExtractFont(TSharedRef<const ISubsystemTreeItem> Item) const;
 	/* text columns support sorting by default */

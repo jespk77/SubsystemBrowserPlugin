@@ -8,11 +8,13 @@
 ## Subsystem Browser Plugin for Unreal Engine
 
 Subsystems provide an easy way to extend engine functionality and implement new features while avoiding the complexity of overriding engine classes or packing multiple independent features into a single class.
-Check [Programming Subsystems](https://docs.unrealengine.com/4.27/en-US/ProgrammingAndScripting/Subsystems/) article if you haven't tried them yet.
+Check [Programming Subsystems](https://dev.epicgames.com/documentation/en-us/unreal-engine/programming-subsystems-in-unreal-engine) article if you haven't tried them yet.
 
 With Subsystems being a great tool, Unreal Engine Editor does not have a default method to visualize them or allow changing their properties at runtime.
 
-The Subsystem Browser Plugin comes to rescue with a dedicated panel displaying active subsystems and enabling viewing and editing of their properties.
+Plugin provides a dedicated Subsystem Browser panel to display active subsystems with property editor.
+
+New Subsystem Settings panel provides an easy way to interact with config properties within Subsystem-derived classes without need to create a standalone UDeveloperSettings class.
 
 ## Key Features
 
@@ -31,10 +33,12 @@ The Subsystem Browser Plugin comes to rescue with a dedicated panel displaying a
  * Support for custom categories: ![Customizing Categories](https://github.com/aquanox/SubsystemBrowserPlugin/wiki/Customizing-Categories)
  * Support for custom table colums: ![Customizing Columns](https://github.com/aquanox/SubsystemBrowserPlugin/wiki/Customizing-Columns)
  * Support for custom tooltips: ![Customizing Tooltips](https://github.com/aquanox/SubsystemBrowserPlugin/wiki/Customizing-Tooltips)
+ * Various ![Metadata Specifiers](https://github.com/aquanox/SubsystemBrowserPlugin/wiki/Plugin-Metadata-Specifiers-Reference) for Subsystem classes
+ * Subsystem Settings Panel to interact with config properties.
  
 ## Unreal Engine Versions
 
-Tested with 4.25-4.27, 5.0, ue5-main and can be easily modified to work with other engine versions.
+Plugin compatible with 4.25-4.27, 5.0+, ue5-main and can be easily modified to work with other engine versions.
 
 ## Contributing
 
@@ -55,4 +59,4 @@ SubsystemBrowserPlugin is available under the MIT license. See the LICENSE file 
 
 ---
 
-Special Thanks to Unreal Slackers Community Discord and #cpp 
+Special Thanks to Unreal Source Community Discord and #cpp 

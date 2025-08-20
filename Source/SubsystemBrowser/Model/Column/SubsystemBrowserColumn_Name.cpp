@@ -2,7 +2,12 @@
 
 #include "Model/Column/SubsystemBrowserColumn_Name.h"
 
+#include "SubsystemBrowserSettings.h"
+#include "SubsystemBrowserStyle.h"
 #include "UI/SubsystemTableItem.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Views/SListView.h"
 
 #define LOCTEXT_NAMESPACE "SubsystemBrowser"
 
@@ -17,6 +22,8 @@ FSubsystemDynamicColumn_Name::FSubsystemDynamicColumn_Name()
 
 TSharedPtr<SWidget> FSubsystemDynamicColumn_Name::GenerateColumnWidget(TSharedRef<const ISubsystemTreeItem> Item, TSharedRef<SSubsystemTableItem> TableRow) const
 {
+	const bool bHasIcon = Item->CanHaveChildren() && ExtractIcon(Item) != nullptr;
+	
 	return SNew(SHorizontalBox)
 			+SHorizontalBox::Slot()
 			.AutoWidth()
@@ -32,10 +39,10 @@ TSharedPtr<SWidget> FSubsystemDynamicColumn_Name::GenerateColumnWidget(TSharedRe
 				SNew(SBox)
 				.VAlign(VAlign_Center)
 				.HeightOverride(22)
-				.WidthOverride(Item->CanHaveChildren() ? 16.f : 7.f)
+				.WidthOverride(bHasIcon ? 16.f : 7.f)
 				[
 					SNew(SImage)
-					.Image(TableRow, &SSubsystemTableItem::GetItemIconBrush)
+					.Image(this, &FSubsystemDynamicColumn_Name::ExtractIcon, Item)
 				]
 			]
 
@@ -53,6 +60,32 @@ TSharedPtr<SWidget> FSubsystemDynamicColumn_Name::GenerateColumnWidget(TSharedRe
 			];
 }
 
+const FSlateBrush* FSubsystemDynamicColumn_Name::ExtractIcon(TSharedRef<const ISubsystemTreeItem> Item) const
+{
+	switch (Item->GetType())
+	{
+	case ISubsystemTreeItem::EItemType::Category:
+		{
+			return FStyleHelper::GetBrush(Item->bExpanded
+					? FSubsystemBrowserStyle::FolderOpenName
+					: FSubsystemBrowserStyle::FolderClosedName);
+		}
+	case ISubsystemTreeItem::EItemType::Subsystem:
+		{
+			//if (Item->CanHaveChildren() && Item->GetNumChildren() > 0)
+			//{
+			//	return FStyleHelper::GetBrush(Item->bExpanded
+			//		? FSubsystemBrowserStyle::FolderOpenName
+			//		: FSubsystemBrowserStyle::FolderClosedName);
+			//}
+			return Item->GetIcon();
+		}
+	case ISubsystemTreeItem::EItemType::Object:
+	default:
+		return Item->GetIcon();
+	}
+}
+
 FText FSubsystemDynamicColumn_Name::ExtractText(TSharedRef<const ISubsystemTreeItem> Item) const
 {
 	FFormatNamedArguments Args;
@@ -63,9 +96,16 @@ FText FSubsystemDynamicColumn_Name::ExtractText(TSharedRef<const ISubsystemTreeI
 
 FSlateColor FSubsystemDynamicColumn_Name::ExtractColor(TSharedRef<const ISubsystemTreeItem> Item) const
 {
-	if (Item->IsStale())
+	const USubsystemBrowserSettings* Settings = USubsystemBrowserSettings::Get();
+	if (Settings->IsColoringEnabled() && !Item->IsStale() && !Item->IsSelected())
 	{
-		return FSlateColor::UseSubduedForeground();
+		if (const FSubsystemTreeSubsystemItem* SubsystemItem = Item->GetAsSubsystemDescriptor())
+		{
+			if (SubsystemItem->UserColor.IsSet())
+			{
+				return SubsystemItem->UserColor.GetValue();
+			}
+		}
 	}
 	return Super::ExtractColor(Item);
 }

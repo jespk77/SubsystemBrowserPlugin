@@ -7,7 +7,7 @@
 /**
  * "Name" column implementation
  */
-struct FSubsystemDynamicColumn_Name : public FSubsystemDynamicTextColumn
+struct SUBSYSTEMBROWSER_API FSubsystemDynamicColumn_Name : public FSubsystemDynamicTextColumn
 {
 	using Super = FSubsystemDynamicTextColumn;
 
@@ -16,6 +16,7 @@ struct FSubsystemDynamicColumn_Name : public FSubsystemDynamicTextColumn
 	virtual bool IsVisibleByDefault() const override { return true; }
 	virtual TSharedPtr<SWidget> GenerateColumnWidget(TSharedRef<const ISubsystemTreeItem> Item, TSharedRef<class SSubsystemTableItem> TableRow) const override;
 	virtual void PopulateSearchStrings(const ISubsystemTreeItem& Item, TArray<FString>& OutSearchStrings) const override;
+	virtual const FSlateBrush* ExtractIcon(TSharedRef<const ISubsystemTreeItem> Item) const;
 	virtual FText ExtractText(TSharedRef<const ISubsystemTreeItem> Item) const override;
 	virtual FText ExtractTooltipText(TSharedRef<const ISubsystemTreeItem> Item) const override { return FText::GetEmpty(); }
 	virtual FSlateColor ExtractColor(TSharedRef<const ISubsystemTreeItem> Item) const override;

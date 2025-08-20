@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "CoreFwd.h"
 #include "SlateFwd.h"
 #include "Widgets/SWidget.h"
 #include "Widgets/SCompoundWidget.h"
@@ -11,7 +11,10 @@
 #include "UI/SubsystemTableHeader.h"
 #include "Model/SubsystemBrowserModel.h"
 
+class SComboButton;
+struct FPropertyAndParent;
 class IDetailsView;
+class ITableRow;
 
 /**
  * Subsystem browser tab content widget
@@ -68,28 +71,33 @@ protected:
 	// Tree view
 
 	void SetupColumns(SHeaderRow& HeaderRow);
-	TSharedRef<class ITableRow> GenerateTreeRow(SubsystemTreeItemPtr Item, const TSharedRef<STableViewBase>& OwnerTable);
+	TSharedRef<ITableRow> GenerateTreeRow(SubsystemTreeItemPtr Item, const TSharedRef<STableViewBase>& OwnerTable);
 	void GetChildrenForTree(SubsystemTreeItemPtr Item, TArray<SubsystemTreeItemPtr>& OutChildren);
 	void OnExpansionChanged(SubsystemTreeItemPtr Item, bool bIsItemExpanded);
 	void OnSelectionChanged(const SubsystemTreeItemPtr Item, ESelectInfo::Type SelectInfo);
 	void OnTreeViewMouseButtonDoubleClick(SubsystemTreeItemPtr Item);
 
 	EColumnSortMode::Type GetColumnSortMode(FName ColumnId) const;
-	void OnColumnSortModeChanged( const EColumnSortPriority::Type SortPriority, const FName& ColumnId, const EColumnSortMode::Type InSortMode );
+	void OnColumnSortModeChanged(const EColumnSortPriority::Type SortPriority, const FName& ColumnId, const EColumnSortMode::Type InSortMode);
 	void SortItems(TArray<SubsystemTreeItemPtr>& Items) const;
 
 	void ToggleDisplayColumn(FName ColumnName);
 	void ToggleTableColoring();
-	void ToggleShowHiddenProperties();
+	void ToggleForceHiddenPropertyVisibility();
 	void ToggleShouldShowOnlyGame();
 	void ToggleShouldShowOnlyPlugins();
+	void ToggleShouldShowOnlyViewable();
 
 	void ShowPluginSettingsTab() const;
+	void ShowSubsystemSettingsTab() const;
+
+	FReply RequestRefresh();
 
 	// Selection and Expansion
 
 	TMap<FSubsystemTreeItemID, bool> GetParentsExpansionState() const;
 	void SetParentsExpansionState(const TMap<FSubsystemTreeItemID, bool>& ExpansionInfo);
+	void ResetParentsExpansionState();
 
 	SubsystemTreeItemPtr GetFirstSelectedItem() const;
 	const FSubsystemTreeSubsystemItem* GetFirstSelectedSubsystem() const;
@@ -99,13 +107,13 @@ protected:
 
 	const FSlateBrush* GetWorldsMenuBrush() const;
 	FText GetCurrentWorldText() const;
-	FText GetWorldDescription(UWorld* World) const;
 	void OnSelectWorld(TWeakObjectPtr<UWorld> InWorld);
 	bool IsWorldChecked(TWeakObjectPtr<UWorld> InWorld);
 	TSharedRef<SWidget> GetWorldsButtonContent();
 
 	void HandlePIEStart(const bool bIsSimulating);
 	void HandlePIEEnd(const bool bIsSimulating);
+	void HandleWorldChange(UWorld* InWorld);
 
 	// Details
 
@@ -114,9 +122,8 @@ protected:
 	void SetSelectedObject(SubsystemTreeItemPtr Item);
 	void ResetSelectedObject();
 
-	bool IsDetailsPropertyEditingEnabled();
-	bool IsDetailsPropertyReadOnly(const FPropertyAndParent& InProperty);
-	bool IsDetailsPropertyVisible(const FPropertyAndParent& InProperty);
+	static bool IsDetailsPropertyReadOnly(const FPropertyAndParent& InProperty);
+	static bool IsDetailsPropertyVisible(const FPropertyAndParent& InProperty);
 
 	// Item context menu
 
@@ -159,12 +166,15 @@ private:
 
 	TSharedPtr<SSubsystemsTreeWidget> TreeWidget;
 
+	TOptional<TWeakObjectPtr<UObject>> PendingSelectionObject;
+
 	bool bIsReentrant = false;
 	bool bFullRefresh = true;
 	bool bNeedsRefresh = true; // needs initial update
 	bool bNeedRefreshDetails = false;
 	bool bUpdatingSelection = false;
 	bool bLoadedExpansionSettings = false;
+	bool bNeedsExpansionSettingsSave = false;
 	bool bNeedListRebuild = true; // needs initial header update to upply config
 	bool bNeedsColumnRefresh = false; // refresh header widgets?
 

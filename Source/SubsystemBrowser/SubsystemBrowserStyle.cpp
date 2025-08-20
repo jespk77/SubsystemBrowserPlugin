@@ -14,6 +14,16 @@
 const FName FSubsystemBrowserStyle::StyleName("SubsystemBrowserStyle");
 TSharedPtr<FSubsystemBrowserStyle> FSubsystemBrowserStyle::StyleInstance;
 
+#if UE_VERSION_OLDER_THAN(5, 0, 0)
+const FName FSubsystemBrowserStyle::PanelIconName(TEXT("LevelEditor.GameSettings.Small"));
+const FName FSubsystemBrowserStyle::FolderOpenName(TEXT("SceneOutliner.FolderOpen"));
+const FName FSubsystemBrowserStyle::FolderClosedName(TEXT("SceneOutliner.FolderClosed"));
+#else
+const FName FSubsystemBrowserStyle::PanelIconName(TEXT("Icons.Settings"));
+const FName FSubsystemBrowserStyle::FolderOpenName(TEXT("Icons.FolderOpen"));
+const FName FSubsystemBrowserStyle::FolderClosedName(TEXT("Icons.FolderClosed"));
+#endif
+
 void FSubsystemBrowserStyle::Register()
 {
 	check(!StyleInstance.IsValid());

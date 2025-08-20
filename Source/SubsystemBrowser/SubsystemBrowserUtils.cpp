@@ -1,33 +1,108 @@
 ﻿// Copyright 2022, Aquanox.
 
 #include "SubsystemBrowserUtils.h"
-#include "SubsystemBrowserModule.h"
-#include "SubsystemBrowserFlags.h"
 #include "SourceCodeNavigation.h"
-#include "Subsystems/LocalPlayerSubsystem.h"
+#include "SubsystemBrowserFlags.h"
+#include "SubsystemBrowserModule.h"
+#include "SubsystemBrowserSettings.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/World.h"
+#include "Engine/Engine.h"
 #include "Framework/Notifications/NotificationManager.h"
-#include "Interfaces/IPluginManager.h"
-#include "Model/SubsystemBrowserDescriptor.h"
+#include "HAL/FileManager.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "Interfaces/IPluginManager.h"
+#include "Misc/EngineVersionComparison.h"
+#include "Misc/PackageName.h"
+#include "Model/SubsystemBrowserDescriptor.h"
+#include "Subsystems/LocalPlayerSubsystem.h"
+#include "Subsystems/WorldSubsystem.h"
+#include "UObject/Package.h"
+#include "UObject/TextProperty.h"
+#include "UObject/UObjectHash.h"
+
+#define LOCTEXT_NAMESPACE "SubsystemBrowser"
 
 static FAutoConsoleCommandWithWorldArgsAndOutputDevice CmdPrintClassData(
-	TEXT("SB.PrintClass"), TEXT("Dump class details"),
+	TEXT("SB.PrintClass"), TEXT("Print class details"),
 	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(&FSubsystemBrowserUtils::PrintClassDetails)
 );
 static FAutoConsoleCommandWithWorldArgsAndOutputDevice CmdPrintPropertyData(
-	TEXT("SB.PrintProperty"), TEXT("Dump property details"),
+	TEXT("SB.PrintProperty"), TEXT("Print property details"),
 	FConsoleCommandWithWorldArgsAndOutputDeviceDelegate::CreateStatic(&FSubsystemBrowserUtils::PrintPropertyDetails)
 );
 
-FString FSubsystemBrowserUtils::GetDefaultSubsystemOwnerName(UObject* Instance)
+TOptional<FString> FSubsystemBrowserUtils::GetSmartMetaValue(UObject* InObject, const FName& InName, bool bHierarchical, bool bWarn)
 {
+	TOptional<FString> UserSource;
+
+	if (bHierarchical)
+		UserSource = GetMetadataHierarchical(InObject->GetClass(), InName);
+	else
+		UserSource = GetMetadataOptional(InObject->GetClass(), InName);
+
+	if (UserSource.IsSet() && FName::IsValidXName(UserSource.GetValue(), INVALID_OBJECTNAME_CHARACTERS))
+	{
+		const FName Name ( *UserSource.GetValue() );
+		if (const UFunction* Func = InObject->GetClass()->FindFunctionByName(Name))
+		{
+			if (Func->HasAllFunctionFlags(FUNC_Native) && !Func->HasAnyFunctionFlags(FUNC_Static) && Func->GetReturnProperty())
+			{
+				if (Func->GetReturnProperty()->IsA(FStrProperty::StaticClass()))
+				{
+					FSubsystemBrowserGetStringProperty Delegate;
+					Delegate.BindUFunction(InObject, Name);
+					return Delegate.Execute();
+				}
+				else if (Func->GetReturnProperty()->IsA(FTextProperty::StaticClass()))
+				{
+					FSubsystemBrowserGetTextProperty Delegate;
+					Delegate.BindUFunction(InObject, Name);
+					return Delegate.Execute().ToString();
+				}
+			}
+		}
+		else if (const FProperty* Prop = InObject->GetClass()->FindPropertyByName(Name))
+		{
+			if (Prop->IsA(FStrProperty::StaticClass()))
+			{
+				return CastFieldChecked<FStrProperty>(Prop)->GetPropertyValue(InObject);
+			}
+			else if (Prop->IsA(FTextProperty::StaticClass()))
+			{
+				return CastFieldChecked<FTextProperty>(Prop)->GetPropertyValue(InObject).ToString();
+			}
+		}
+
+		if (bWarn)
+		{
+			UE_LOG(LogSubsystemBrowser, Warning, TEXT("%s specifies source %s but it is neither valid function or property"),
+				*GetNameSafe(InObject), *UserSource.GetValue());
+		}
+	}
+
+	return UserSource;
+}
+
+FString FSubsystemBrowserUtils::GetSubsystemOwnerName(UObject* Instance)
+{
+	// First try searching for user function or
+	TOptional<FString> UserSource = GetSmartMetaValue(Instance, FSubsystemBrowserUserMeta::MD_SBOwnerName, true);
+	if (UserSource.IsSet())
+	{
+		return UserSource.GetValue();
+	}
+
 	if (ULocalPlayerSubsystem* PlayerSubsystem = Cast<ULocalPlayerSubsystem>(Instance))
 	{
 		if (ULocalPlayer* LocalPlayer = PlayerSubsystem->GetLocalPlayer<ULocalPlayer>())
 		{
 			return LocalPlayer->GetName();
 		}
+	}
+	else if (UWorldSubsystem* WorldSubsystem = Cast<UWorldSubsystem>(Instance))
+	{
+		return GetWorldDescription(WorldSubsystem->GetWorld()).ToString();
 	}
 	else if (UObject* Outer = Instance->GetOuter())
 	{
@@ -47,56 +122,20 @@ FString FSubsystemBrowserUtils::GetModulePathForClass(UClass* InClass)
 	return ModulePath;
 }
 
-FString FSubsystemBrowserUtils::GetModuleNameForClass(UClass* InClass)
+bool FSubsystemBrowserUtils::GetModuleDetailsForClass(UClass* InClass, FString& OutName, bool& OutGameFlag)
 {
-	FString ModuleName;
-	if (!FSourceCodeNavigation::FindClassModuleName(InClass, ModuleName))
-	{
-		return TEXT("Unknown");
-	}
-	return ModuleName;
-}
+	OutName = TEXT("Unknown");
+	OutGameFlag = false;
 
-TSharedPtr<class IPlugin> FSubsystemBrowserUtils::GetPluginForClass(UClass* InClass)
-{
 	// Find module name from class
 	if( InClass )
 	{
-		UPackage* ClassPackage = InClass->GetOuterUPackage();
-
-		if( ClassPackage )
+		if( UPackage* ClassPackage = InClass->GetOuterUPackage() )
 		{
 			//@Package name transition
 			FName ShortClassPackageName = FPackageName::GetShortFName(ClassPackage->GetFName());
 
-			for (TSharedRef<IPlugin>& Plugin : IPluginManager::Get().GetDiscoveredPlugins())
-			{
-				for (const FModuleDescriptor& ModuleDescriptor : Plugin->GetDescriptor().Modules)
-				{
-					if (ModuleDescriptor.Name == ShortClassPackageName)
-					{
-						return Plugin;
-					}
-				}
-			}
-		}
-	}
-
-	return nullptr;
-}
-
-bool FSubsystemBrowserUtils::IsGameModuleClass(UClass* InClass)
-{
-	bool bResult = false;
-	// Find module name from class
-	if( InClass )
-	{
-		UPackage* ClassPackage = InClass->GetOuterUPackage();
-
-		if( ClassPackage )
-		{
-			//@Package name transition
-			FName ShortClassPackageName = FPackageName::GetShortFName(ClassPackage->GetFName());
+			OutName = ShortClassPackageName.ToString();
 
 			// Is this module loaded?  In many cases, we may not have a loaded module for this class' package,
 			// as it might be statically linked into the executable, etc.
@@ -108,12 +147,51 @@ bool FSubsystemBrowserUtils::IsGameModuleClass(UClass* InClass)
 				FModuleStatus ModuleStatus;
 				if( ensure( FModuleManager::Get().QueryModule( ShortClassPackageName, ModuleStatus ) ) )
 				{
-					bResult = ModuleStatus.bIsGameModule;
+					OutName = ModuleStatus.Name;
+					OutGameFlag = ModuleStatus.bIsGameModule;
+					return true;
+				}
+				else
+				{
+					UE_LOG(LogSubsystemBrowser, Warning, TEXT("Failed to resolve module details of %s: Query Failed"), *ShortClassPackageName.ToString() );
+				}
+			}
+			else
+			{
+				UE_LOG(LogSubsystemBrowser, Warning, TEXT("Failed to resolve module details of %s: Not Loaded Yet"), *ShortClassPackageName.ToString() );
+			}
+		}
+	}
+	return false;
+}
+
+bool FSubsystemBrowserUtils::GetPluginDetailsForClass(UClass* InClass, FString& OutName, FString& OutFriendlyName)
+{
+	if (InClass)
+	{
+		if (UPackage* ClassPackage = InClass->GetOuterUPackage())
+		{
+			FName ShortClassPackageName = FPackageName::GetShortFName(ClassPackage->GetFName());
+
+			for (TSharedRef<IPlugin>& Plugin : IPluginManager::Get().GetDiscoveredPlugins())
+			{
+				for (const FModuleDescriptor& ModuleDescriptor : Plugin->GetDescriptor().Modules)
+				{
+					if (ModuleDescriptor.Name == ShortClassPackageName)
+					{
+						OutName = Plugin->GetName();
+#if UE_VERSION_OLDER_THAN(4, 26, 0)
+						OutFriendlyName = Plugin->GetName();
+#else
+						OutFriendlyName = Plugin->GetFriendlyName();
+#endif
+						return true;
+					}
 				}
 			}
 		}
 	}
-	return bResult;
+	return false;
 }
 
 void FSubsystemBrowserUtils::CollectSourceFiles(UClass* InClass, TArray<FString>& OutSourceFiles)
@@ -162,6 +240,10 @@ FSubsystemBrowserUtils::FClassFieldStats FSubsystemBrowserUtils::GetClassFieldSt
 		if (Property->HasAnyPropertyFlags(CPF_Config|CPF_GlobalConfig))
 		{
 			Stats.NumConfig ++;
+			if (Property->HasAnyPropertyFlags(CPF_Edit))
+			{
+				Stats.NumConfigWithEdit ++;
+			}
 		}
 	}
 
@@ -183,6 +265,31 @@ FSubsystemBrowserUtils::FClassFieldStats FSubsystemBrowserUtils::GetClassFieldSt
 	return Stats;
 }
 
+TOptional<FString> FSubsystemBrowserUtils::GetMetadataOptional(UClass* InClass, FName InKey)
+{
+	if (const FString* Value = InClass->FindMetaData(InKey))
+	{
+		return *Value;
+	}
+	return TOptional<FString>();
+}
+
+TOptional<FString> FSubsystemBrowserUtils::GetMetadataHierarchical(UClass* InClass, FName InKey)
+{
+	UClass* CurrentClass = InClass;
+	while(CurrentClass && CurrentClass != UObject::StaticClass())
+	{
+		if (const FString* Value = CurrentClass->FindMetaData(InKey))
+		{
+			return *Value;
+		}
+
+		CurrentClass = CurrentClass->GetSuperClass();
+	}
+
+	return TOptional<FString>();
+}
+
 void FSubsystemBrowserUtils::SetClipboardText(const FString& ClipboardText)
 {
 	UE_LOG(LogSubsystemBrowser, Log, TEXT("Clipboard set to:\n%s"), *ClipboardText);
@@ -192,15 +299,22 @@ void FSubsystemBrowserUtils::SetClipboardText(const FString& ClipboardText)
 
 FString FSubsystemBrowserUtils::GenerateConfigExport(const FSubsystemTreeSubsystemItem* SelectedSubsystem, bool bModifiedOnly)
 {
+	if (SelectedSubsystem->IsStale())
+		return FString();
+
+	return GenerateConfigExport(SelectedSubsystem->GetObjectForDetails(), bModifiedOnly);
+}
+
+FString FSubsystemBrowserUtils::GenerateConfigExport(const UObject* Subsystem, bool bModifiedOnly)
+{
+	UClass* const Class = Subsystem->GetClass();
+
 	FString ConfigBlock;
 	ConfigBlock.Reserve(256);
-	ConfigBlock += FString::Printf(TEXT("; Should be in Default%s.ini"), *SelectedSubsystem->ConfigName.ToString());
-	ConfigBlock += LINE_TERMINATOR;
-	ConfigBlock += FString::Printf(TEXT("[%s.%s]"), *SelectedSubsystem->Package, *SelectedSubsystem->ClassName.ToString());
-	ConfigBlock += LINE_TERMINATOR;
+	ConfigBlock += FString::Printf(TEXT("; Should be in %s%s"), *Class->GetConfigName(), LINE_TERMINATOR);
+	ConfigBlock += FString::Printf(TEXT("; or defaults %s%s"), *Class->GetDefaultConfigFilename(), LINE_TERMINATOR);
+	ConfigBlock += FString::Printf(TEXT("[%s.%s]%s"), *Class->GetOuterUPackage()->GetName(), *Class->GetName(), LINE_TERMINATOR);
 
-	UObject* const Subsystem  = SelectedSubsystem->Subsystem.Get();
-	UClass* const Class = SelectedSubsystem->Class.Get();
 	UObject* const SubsystemDefaults  = Class ? Class->GetDefaultObject() : nullptr;
 
 	if (Subsystem && SubsystemDefaults && Class)
@@ -217,9 +331,9 @@ FString FSubsystemBrowserUtils::GenerateConfigExport(const FSubsystemTreeSubsyst
 			{
 				for( int32 Idx=0; Idx<Property->ArrayDim; Idx++ )
 				{
-					uint8* DataPtr      = Property->ContainerPtrToValuePtr           <uint8>((uint8*)Subsystem, Idx);
-					uint8* DefaultValue = Property->ContainerPtrToValuePtrForDefaults<uint8>(Class, (uint8*)SubsystemDefaults, Idx);
-					if (bModifiedOnly == false || !Property->Identical( DataPtr, DefaultValue, PPF_DeepCompareInstances))
+					const uint8* DataPtr = Property->ContainerPtrToValuePtr<uint8>(Subsystem, Idx);
+					const uint8* DefaultValue = Property->ContainerPtrToValuePtrForDefaults<uint8>(Class, SubsystemDefaults, Idx);
+					if (bModifiedOnly == false || !Property->Identical(DataPtr, DefaultValue, PPF_DeepCompareInstances))
 					{
 						ModifiedProperties.Add(Property);
 						break;
@@ -247,8 +361,8 @@ FString FSubsystemBrowserUtils::GenerateConfigExport(const FSubsystemTreeSubsyst
 
 			for( int32 Idx=0; Idx< Property->ArrayDim; Idx++ )
 			{
-				uint8* DataPtr      = Property->ContainerPtrToValuePtr           <uint8>(Subsystem, Idx);
-				uint8* DefaultValue = Property->ContainerPtrToValuePtrForDefaults<uint8>(Class, SubsystemDefaults, Idx);
+				const uint8* DataPtr = Property->ContainerPtrToValuePtr<uint8>(Subsystem, Idx);
+				const uint8* DefaultValue = Property->ContainerPtrToValuePtrForDefaults<uint8>(Class, SubsystemDefaults, Idx);
 
 				FString ExportValue;
 #if UE_VERSION_OLDER_THAN(5,1,0)
@@ -332,12 +446,18 @@ const TMap<EClassFlags, FString>& GetClassFlagsMap()
 		ADD_FLAG(CLASS_Transient);
 		ADD_FLAG(CLASS_MatchedSerializers);
 		ADD_FLAG(CLASS_Native);
+#if UE_VERSION_OLDER_THAN(5, 1, 0)
+		ADD_FLAG(CLASS_NoExport);
+#endif
 		ADD_FLAG(CLASS_NotPlaceable);
 		ADD_FLAG(CLASS_PerObjectConfig);
 		ADD_FLAG(CLASS_ReplicationDataIsSetUp);
 		ADD_FLAG(CLASS_EditInlineNew);
 		ADD_FLAG(CLASS_CollapseCategories);
 		ADD_FLAG(CLASS_Interface);
+#if UE_VERSION_OLDER_THAN(5, 1, 0)
+		ADD_FLAG(CLASS_CustomConstructor);
+#endif
 		ADD_FLAG(CLASS_Const);
 		ADD_FLAG(CLASS_CompiledFromBlueprint);
 		ADD_FLAG(CLASS_MinimalAPI);
@@ -354,7 +474,7 @@ const TMap<EClassFlags, FString>& GetClassFlagsMap()
 		ADD_FLAG(CLASS_ConfigDoNotCheckDefaults);
 		ADD_FLAG(CLASS_NewerVersionExists);
 
-#if SINCE_UE_VERSION(5, 0, 0)
+#if !UE_VERSION_OLDER_THAN(5, 0, 0)
 		ADD_FLAG(CLASS_Optional);
 		ADD_FLAG(CLASS_ProjectUserConfig);
 		ADD_FLAG(CLASS_NeedsDeferredDependencyLoading);
@@ -442,6 +562,9 @@ void FSubsystemBrowserUtils::PrintClassDetails(const TArray<FString>& InArgs, UW
 		return;
 	}
 
+	InLog.Logf(TEXT("Class: %s"), *Class->GetName());
+	InLog.Logf(TEXT("Class Flags: %s"), *FlagsToString(Class->GetClassFlags(), GetClassFlagsMap()));
+
 	for (TPropertyValueIterator<FProperty> It(Class, Class->GetDefaultObject()); It; ++It)
 	{
 		const FProperty* Property = It->Key;
@@ -450,7 +573,7 @@ void FSubsystemBrowserUtils::PrintClassDetails(const TArray<FString>& InArgs, UW
 	}
 }
 
-void FSubsystemBrowserUtils::PrintPropertyDetails(const TArray< FString >& InArgs, UWorld* InWorld, FOutputDevice& InLog)
+void FSubsystemBrowserUtils::PrintPropertyDetails(const TArray<FString>& InArgs, UWorld* InWorld, FOutputDevice& InLog)
 {
 	if (InArgs.Num() != 2)
 	{
@@ -475,3 +598,131 @@ void FSubsystemBrowserUtils::PrintPropertyDetails(const TArray< FString >& InArg
 	InLog.Logf(TEXT("Type: %s"), *Property->GetClass()->GetName());
 	InLog.Logf(TEXT("Flags: %s"), *FlagsToString(Property->GetPropertyFlags(), GetPropertyFlagsMap()));
 }
+
+FText FSubsystemBrowserUtils::GetWorldDescription(const UWorld* World)
+{
+	FText Description;
+	if(World)
+	{
+		FText PostFix;
+		const FWorldContext* WorldContext = nullptr;
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			if(Context.World() == World)
+			{
+				WorldContext = &Context;
+				break;
+			}
+		}
+
+		if (World->WorldType == EWorldType::PIE)
+		{
+			switch(World->GetNetMode())
+			{
+				case NM_Client:
+					if (WorldContext)
+					{
+						PostFix = FText::Format(LOCTEXT("ClientPostfixFormat", "(Client {0})"), FText::AsNumber(WorldContext->PIEInstance - 1));
+					}
+					else
+					{
+						PostFix = LOCTEXT("ClientPostfix", "(Client)");
+					}
+					break;
+				case NM_DedicatedServer:
+				case NM_ListenServer:
+					PostFix = LOCTEXT("ServerPostfix", "(Server)");
+					break;
+				case NM_Standalone:
+					PostFix = LOCTEXT("PlayInEditorPostfix", "(Play In Editor)");
+					break;
+				default:
+					break;
+			}
+		}
+		else if(World->WorldType == EWorldType::Editor)
+		{
+			PostFix = LOCTEXT("EditorPostfix", "(Editor)");
+		}
+
+		Description = FText::Format(LOCTEXT("WorldFormat", "{0} {1}"), FText::FromString(World->GetFName().GetPlainNameString()), PostFix);
+	}
+
+	return Description;
+}
+
+UClass* FSubsystemBrowserUtils::TryFindClassByName(const FString& ClassName)
+{
+	UClass* ResultClass = nullptr;
+#if UE_VERSION_OLDER_THAN(5, 0, 0)
+	if (FPackageName::IsShortPackageName(ClassName))
+	{
+		ResultClass = FindObject<UClass>(ANY_PACKAGE, *ClassName);
+	}
+	else
+	{
+		ResultClass = FindObject<UClass>(nullptr, *ClassName);
+	}
+#else
+	ResultClass =  UClass::TryFindTypeSlow<UClass>(ClassName, EFindFirstObjectOptions::EnsureIfAmbiguous);
+	if (!ResultClass)
+	{
+		ResultClass = LoadObject<UClass>(nullptr, *ClassName);
+	}
+#endif
+	return ResultClass;
+}
+
+void FSubsystemBrowserUtils::DefaultSelectSubsystemSubobjects(UObject* InSubsystem, TArray<UObject*>& OutData)
+{
+	OutData.Empty();
+	
+	if (!IsValid(InSubsystem) || !IsValid(InSubsystem->GetClass()))
+	{
+		return;
+	}
+
+	// Option 1: reference to collector function
+	
+	TOptional<FString> UserFunc = GetMetadataHierarchical(InSubsystem->GetClass(), FSubsystemBrowserUserMeta::MD_SBGetSubobjects);
+	if (UserFunc.IsSet() && FName::IsValidXName(UserFunc.GetValue(), INVALID_OBJECTNAME_CHARACTERS))
+	{
+		const FName FuncName (UserFunc.GetValue());
+		
+		UFunction* Func = InSubsystem->GetClass()->FindFunctionByName(FuncName);
+		
+		if (Func && Func->HasAllFunctionFlags(FUNC_Native) && !Func->HasAnyFunctionFlags(FUNC_Static))
+		{
+			FSubsystemBrowserGetSubobjects Delegate;
+			Delegate.BindUFunction(InSubsystem, FuncName);
+			OutData = Delegate.Execute();
+		}
+		else
+		{
+			UE_LOG(LogSubsystemBrowser, Warning, TEXT("Invalid SBGetSubobjects value (%s) for type %s"), *FuncName.ToString(), *InSubsystem->GetClass()->GetName() );
+		}
+		
+		return;
+	}
+
+	TOptional<FString> UserFlag = GetMetadataHierarchical(InSubsystem->GetClass(), FSubsystemBrowserUserMeta::MD_SBAutoGetSubobjects);
+	if (UserFlag.IsSet())
+	{
+		// Option 2: collecting direct subobjects with display flag
+		constexpr bool bIncludeNested = false;
+		constexpr EObjectFlags Excluded = RF_ClassDefaultObject|RF_ArchetypeObject;
+		ForEachObjectWithOuter(InSubsystem, [&](UObject* SubObject)
+		{
+			if (SubObject->GetClass()->FindMetaData(FSubsystemBrowserUserMeta::MD_SBHidden))
+			{
+				return;
+			}
+
+			OutData.Add(SubObject);
+			
+		}, bIncludeNested, Excluded);
+
+	}
+}
+
+#undef LOCTEXT_NAMESPACE
